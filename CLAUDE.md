@@ -75,6 +75,7 @@ beatmania IIDX INFINITASのリザルト画面のスクリーンショットを�
 - 読み取りに自信が無いフィールドは `unclear_fields` として返させる
 - Gemini側で「モデルが混雑中」の503エラー(`google.genai.errors.ServerError`)が頻発したため、`extract_from_bytes`内に最大3回・指数バックオフでのリトライを実装済み(SDK自体も内部でtenacityによる再試行をしているが、それでも枯渇することがあったため)
 - 実画像(image.jpg, Digitank System HYPER)で動作確認済み。曲名・全スコア項目が正確に抽出され、song_db.csvとの照合も成功。既知の精度課題: `is_new_miss_record`がスコア上は新記録(ミスカウント減少)でも`False`になるケースがあった(画面上の「NEW RECORD」バッジを見落とした可能性。プロンプト改善の余地あり)
+- モデル選定: `gemini-3.1-pro-preview` 等のPro系モデルはユーザーの無料APIキーでは **クォータ上限が0固定**(エラーメッセージに明記)で一切使用不可。課金を有効化しない限りPro系は使えないため、無料枠でも安定して高精度だった `gemini-3.5-flash` を採用している。将来的に課金を有効化すればPro系へのアップグレードも検討可
 
 ### scripts/extract_result.py (CLI)
 - `python scripts/extract_result.py <画像ファイル...>` でリザルト画像を解析し、`data/history.csv` に1枚1行で追記する
