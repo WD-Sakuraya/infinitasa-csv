@@ -1,0 +1,11 @@
+# 個人のプレーデータ・写真はリポジトリに含めない
+/data/
+*.csv
+image.jpg
+image*.jpg
+image*.png
+
+__pycache__/
+*.pyc
+.venv/
+venv/
