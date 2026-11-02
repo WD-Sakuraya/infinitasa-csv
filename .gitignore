@@ -1,6 +1,8 @@
-# 個人のプレーデータ・写真はリポジトリに含めない
-/data/
+# 個人のプレーデータ・写真はリポジトリに含めない(data/song_db.csvは公開データなので例外)
+data/history.csv
+data/summary.csv
 *.csv
+!data/song_db.csv
 image.jpg
 image*.jpg
 image*.png

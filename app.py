@@ -4,14 +4,20 @@
     streamlit run app.py
 """
 import csv
+import datetime
 import glob
 import os
 
 import altair as alt
+import anthropic
 import pandas as pd
 import streamlit as st
 
+from scripts.iidx_extract import build_history_row, extract_from_bytes
+from scripts.song_match import SongRow, load_song_db, resolve_title
+
 HISTORY_PATH = "data/history.csv"
+SONG_DB_PATH = "data/song_db.csv"
 
 # 履歴データ(data/history.csv)がまだ無い場合、既存の集計形式CSV
 # (1曲1行・自己ベストのみ、例: 2253-2531_sp_score.csv)を探して代わりに表示する。
@@ -332,9 +338,152 @@ def render_legacy_view(wide_df: pd.DataFrame) -> None:
         st.dataframe(song_long[display_cols], width="stretch", hide_index=True)
 
 
+def get_anthropic_api_key() -> str | None:
+    try:
+        key = st.secrets.get("ANTHROPIC_API_KEY")
+    except Exception:
+        key = None
+    return key or os.environ.get("ANTHROPIC_API_KEY")
+
+
+@st.cache_data
+def load_song_db_cached(path: str):
+    if not os.path.exists(path):
+        return None
+    return load_song_db(path)
+
+
+def render_convert_page() -> None:
+    st.header("リザルト画像から変換")
+
+    api_key = get_anthropic_api_key()
+    if not api_key:
+        st.error(
+            "ANTHROPIC_API_KEYが設定されていません。\n\n"
+            "- Streamlit Community Cloudの場合: アプリ管理画面の "
+            "**Settings → Secrets** に `ANTHROPIC_API_KEY = \"sk-ant-...\"` を追加してください。\n"
+            "- ローカル実行の場合: 環境変数 `ANTHROPIC_API_KEY` を設定してください。"
+        )
+        return
+
+    songs = load_song_db_cached(SONG_DB_PATH)
+    if songs is None:
+        st.error(f"楽曲データベース({SONG_DB_PATH})が見つかりません。")
+        return
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    if "convert_rows" not in st.session_state:
+        st.session_state.convert_rows = []
+    if "pending_images" not in st.session_state:
+        st.session_state.pending_images = {}
+
+    uploaded_images = st.file_uploader(
+        "リザルト画面の画像を選択(複数可)",
+        type=["jpg", "jpeg", "png", "webp"],
+        accept_multiple_files=True,
+        key="convert_image_uploader",
+    )
+    captured_date = st.date_input("取込日時として記録する日付", value=datetime.date.today())
+
+    if uploaded_images and st.button("選択した画像を解析する"):
+        for img in uploaded_images:
+            if img.name in st.session_state.pending_images:
+                continue
+            with st.spinner(f"{img.name} を解析中..."):
+                try:
+                    data = extract_from_bytes(client, img.getvalue(), img.type or "image/jpeg")
+                except Exception as e:
+                    st.error(f"{img.name} の解析に失敗しました: {e}")
+                    continue
+            song, candidates = resolve_title(data["title"], songs)
+            st.session_state.pending_images[img.name] = {
+                "data": data,
+                "song": song,
+                "candidates": candidates,
+            }
+
+    for name, item in list(st.session_state.pending_images.items()):
+        data = item["data"]
+        resolved = item["song"] is not None
+        with st.expander(
+            f"{name} — {data['title']} ({data['difficulty']} / スコア{data['score']})",
+            expanded=not resolved,
+        ):
+            if data["unclear_fields"]:
+                st.warning(f"読み取りに自信が無い項目: {', '.join(data['unclear_fields'])}")
+
+            if item["song"] is not None:
+                resolved_song = item["song"]
+                st.caption(f"{resolved_song.title} / {resolved_song.artist} ({resolved_song.version})")
+            else:
+                options = [
+                    f"{c.song.title} / {c.song.artist} ({c.song.version})" for c in item["candidates"]
+                ]
+                options.append("候補になし(手入力する)")
+                choice = st.radio("曲を選択してください", options, key=f"choice_{name}")
+                if choice == options[-1]:
+                    manual_title = st.text_input("正しいタイトルを入力", key=f"manual_{name}")
+                    match = next((s for s in songs if s.title == manual_title), None)
+                    resolved_song = match or (
+                        SongRow(version="", title=manual_title, genre="", artist=data["artist"])
+                        if manual_title
+                        else None
+                    )
+                else:
+                    idx = options.index(choice)
+                    resolved_song = item["candidates"][idx].song
+
+            col1, col2 = st.columns(2)
+            add_disabled = resolved_song is None or not getattr(resolved_song, "title", None)
+            if col1.button("この内容で追加", key=f"add_{name}", disabled=add_disabled):
+                row = build_history_row(
+                    data, resolved_song, name, captured_date.strftime("%Y-%m-%d")
+                )
+                st.session_state.convert_rows.append(row)
+                del st.session_state.pending_images[name]
+                st.rerun()
+            if col2.button("この画像をスキップ", key=f"skip_{name}"):
+                del st.session_state.pending_images[name]
+                st.rerun()
+
+    if st.session_state.convert_rows:
+        st.subheader("変換済みの履歴")
+        result_df = pd.DataFrame(st.session_state.convert_rows)
+        st.dataframe(result_df, width="stretch", hide_index=True)
+
+        existing_upload = st.file_uploader(
+            "(任意) 既存のhistory.csvに追記する場合はアップロード",
+            type="csv",
+            key="existing_history_upload",
+        )
+        if existing_upload is not None:
+            existing_df = pd.read_csv(existing_upload, encoding="utf-8-sig")
+            combined_df = pd.concat([existing_df, result_df], ignore_index=True)
+        else:
+            combined_df = result_df
+
+        csv_bytes = combined_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "CSVをダウンロード",
+            data=csv_bytes,
+            file_name="history.csv",
+            mime="text/csv",
+        )
+
+        if st.button("変換済み履歴をクリア"):
+            st.session_state.convert_rows = []
+            st.rerun()
+
+
 def main() -> None:
     st.set_page_config(page_title="INFINITAS スコア履歴", layout="wide")
     st.title("INFINITAS スコア履歴")
+
+    mode = st.sidebar.radio("モード", ["履歴を見る", "リザルト画像から変換"])
+    if mode == "リザルト画像から変換":
+        render_convert_page()
+        return
 
     uploaded = st.file_uploader(
         "CSVファイルを選択(省略時はこのPC上のdata/history.csvや集計CSVを自動検出します)",
