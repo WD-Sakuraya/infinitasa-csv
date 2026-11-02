@@ -3,4 +3,4 @@ pandas
 altair
 requests
 beautifulsoup4
-anthropic
+google-genai

@@ -9,9 +9,9 @@ import glob
 import os
 
 import altair as alt
-import anthropic
 import pandas as pd
 import streamlit as st
+from google import genai
 
 from scripts.iidx_extract import build_history_row, extract_from_bytes
 from scripts.song_match import SongRow, load_song_db, resolve_title
@@ -338,12 +338,12 @@ def render_legacy_view(wide_df: pd.DataFrame) -> None:
         st.dataframe(song_long[display_cols], width="stretch", hide_index=True)
 
 
-def get_anthropic_api_key() -> str | None:
+def get_gemini_api_key() -> str | None:
     try:
-        key = st.secrets.get("ANTHROPIC_API_KEY")
+        key = st.secrets.get("GOOGLE_API_KEY")
     except Exception:
         key = None
-    return key or os.environ.get("ANTHROPIC_API_KEY")
+    return key or os.environ.get("GOOGLE_API_KEY")
 
 
 @st.cache_data
@@ -356,13 +356,13 @@ def load_song_db_cached(path: str):
 def render_convert_page() -> None:
     st.header("リザルト画像から変換")
 
-    api_key = get_anthropic_api_key()
+    api_key = get_gemini_api_key()
     if not api_key:
         st.error(
-            "ANTHROPIC_API_KEYが設定されていません。\n\n"
+            "GOOGLE_API_KEYが設定されていません。\n\n"
             "- Streamlit Community Cloudの場合: アプリ管理画面の "
-            "**Settings → Secrets** に `ANTHROPIC_API_KEY = \"sk-ant-...\"` を追加してください。\n"
-            "- ローカル実行の場合: 環境変数 `ANTHROPIC_API_KEY` を設定してください。"
+            "**Settings → Secrets** に `GOOGLE_API_KEY = \"...\"` を追加してください。\n"
+            "- ローカル実行の場合: 環境変数 `GOOGLE_API_KEY` を設定してください。"
         )
         return
 
@@ -371,7 +371,7 @@ def render_convert_page() -> None:
         st.error(f"楽曲データベース({SONG_DB_PATH})が見つかりません。")
         return
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     if "convert_rows" not in st.session_state:
         st.session_state.convert_rows = []

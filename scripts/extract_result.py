@@ -4,7 +4,7 @@
     python scripts/extract_result.py image.jpg
     python scripts/extract_result.py image1.jpg image2.jpg ...
 
-必要な環境変数: ANTHROPIC_API_KEY (または `ant auth login` 済みであること)
+必要な環境変数: GOOGLE_API_KEY (Gemini APIキー)
 """
 import argparse
 import csv
@@ -12,7 +12,8 @@ import datetime
 import os
 import sys
 
-import anthropic
+from google import genai
+from google.genai import errors
 
 from iidx_extract import HISTORY_COLUMNS, build_history_row, extract_from_image
 from song_match import SongRow, load_song_db, resolve_title
@@ -54,7 +55,7 @@ def append_history(row: dict, history_path: str) -> None:
 
 
 def process_image(
-    client: anthropic.Anthropic, image_path: str, songs, history_path: str, captured_at: str
+    client: genai.Client, image_path: str, songs, history_path: str, captured_at: str
 ) -> bool:
     print(f"\n[解析中] {image_path}")
     data = extract_from_image(client, image_path)
@@ -107,15 +108,15 @@ def main():
     songs = load_song_db(args.song_db)
     captured_at = args.date or datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    client = anthropic.Anthropic()
+    client = genai.Client()
 
     ok_count = 0
     for image_path in args.images:
         try:
             if process_image(client, image_path, songs, args.history, captured_at):
                 ok_count += 1
-        except anthropic.APIStatusError as e:
-            print(f"  APIエラー: {e.message}", file=sys.stderr)
+        except errors.APIError as e:
+            print(f"  APIエラー: {e}", file=sys.stderr)
         except Exception as e:
             print(f"  エラー: {e}", file=sys.stderr)
 
