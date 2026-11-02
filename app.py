@@ -447,42 +447,170 @@ def render_convert_page() -> None:
                 del st.session_state.pending_images[name]
                 st.rerun()
 
-    if st.session_state.convert_rows:
-        st.subheader("変換済みの履歴")
-        result_df = pd.DataFrame(st.session_state.convert_rows)
-        st.dataframe(result_df, width="stretch", hide_index=True)
+    render_accumulated_rows_section()
 
-        existing_upload = st.file_uploader(
-            "(任意) 既存のhistory.csvに追記する場合はアップロード",
-            type="csv",
-            key="existing_history_upload",
+
+def render_accumulated_rows_section() -> None:
+    """画像変換・手動入力どちらで追加した行も、ここで一覧表示してCSVダウンロードできる。"""
+    if not st.session_state.get("convert_rows"):
+        return
+
+    st.subheader("追加済みの履歴")
+    result_df = pd.DataFrame(st.session_state.convert_rows)
+    st.dataframe(result_df, width="stretch", hide_index=True)
+
+    existing_upload = st.file_uploader(
+        "(任意) 既存のhistory.csvに追記する場合はアップロード",
+        type="csv",
+        key="existing_history_upload",
+    )
+    if existing_upload is not None:
+        existing_df = pd.read_csv(existing_upload, encoding="utf-8-sig")
+        combined_df = pd.concat([existing_df, result_df], ignore_index=True)
+    else:
+        combined_df = result_df
+
+    csv_bytes = combined_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "CSVをダウンロード",
+        data=csv_bytes,
+        file_name="history.csv",
+        mime="text/csv",
+    )
+
+    if st.button("追加済み履歴をクリア"):
+        st.session_state.convert_rows = []
+        st.rerun()
+
+
+CLEAR_TYPES = [
+    "NO PLAY",
+    "FAILED",
+    "ASSIST CLEAR",
+    "EASY CLEAR",
+    "CLEAR",
+    "HARD CLEAR",
+    "EX HARD CLEAR",
+    "FULLCOMBO CLEAR",
+]
+DJ_LEVEL_RANKS = ["F", "E", "D", "C", "B", "A", "AA", "AAA"]
+
+
+def _parse_optional_int(text: str) -> int | None:
+    text = text.strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def render_manual_entry_page() -> None:
+    st.header("手動で入力してCSVに追加")
+
+    songs = load_song_db_cached(SONG_DB_PATH)
+    if songs is None:
+        st.error(f"楽曲データベース({SONG_DB_PATH})が見つかりません。")
+        return
+
+    if "convert_rows" not in st.session_state:
+        st.session_state.convert_rows = []
+
+    titles = sorted(s.title for s in songs)
+    title_options = ["(一覧に無い・手入力する)"] + titles
+    title_choice = st.selectbox("曲名(検索可)", title_options, key="manual_title_select")
+
+    if title_choice == title_options[0]:
+        manual_title = st.text_input("曲名を入力", key="manual_title_text")
+        manual_artist = st.text_input("アーティスト名を入力", key="manual_artist_text")
+        song = (
+            SongRow(version="", title=manual_title, genre="", artist=manual_artist)
+            if manual_title
+            else None
         )
-        if existing_upload is not None:
-            existing_df = pd.read_csv(existing_upload, encoding="utf-8-sig")
-            combined_df = pd.concat([existing_df, result_df], ignore_index=True)
-        else:
-            combined_df = result_df
+    else:
+        song = next(s for s in songs if s.title == title_choice)
+        st.caption(f"{song.artist} / {song.genre} / {song.version}")
 
-        csv_bytes = combined_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "CSVをダウンロード",
-            data=csv_bytes,
-            file_name="history.csv",
-            mime="text/csv",
-        )
+    with st.form("manual_entry_form"):
+        col1, col2, col3 = st.columns(3)
+        mode = col1.radio("モード", ["SP", "DP"], horizontal=True)
+        difficulty = col2.selectbox("難易度", DIFFICULTIES)
+        level = col3.number_input("難易度数値", min_value=0, max_value=12, step=1, value=0)
 
-        if st.button("変換済み履歴をクリア"):
-            st.session_state.convert_rows = []
-            st.rerun()
+        col1, col2 = st.columns(2)
+        clear_type = col1.selectbox("クリアタイプ", CLEAR_TYPES)
+        dj_level_rank = col2.selectbox("DJ LEVEL", DJ_LEVEL_RANKS, index=4)
+
+        col1, col2, col3 = st.columns(3)
+        score = col1.number_input("スコア", min_value=0, step=1, value=0)
+        miss_count = col2.number_input("ミスカウント", min_value=0, step=1, value=0)
+        notes = col3.text_input("ノーツ数(任意)", value="")
+
+        col1, col2 = st.columns(2)
+        score_diff = col1.text_input("スコア自己ベスト差分(任意、符号付き)", value="")
+        miss_diff = col2.text_input("ミスカウント自己ベスト差分(任意、符号付き)", value="")
+        dj_level_diff = st.text_input("DJ LEVEL基準点差分(任意、符号付き)", value="")
+
+        st.caption("JUDGE内訳")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        pgreat = col1.number_input("PGreat", min_value=0, step=1, value=0)
+        great = col2.number_input("Great", min_value=0, step=1, value=0)
+        good = col3.number_input("Good", min_value=0, step=1, value=0)
+        bad = col4.number_input("Bad", min_value=0, step=1, value=0)
+        poor = col5.number_input("Poor", min_value=0, step=1, value=0)
+
+        col1, col2 = st.columns(2)
+        is_new_score_record = col1.checkbox("自己ベスト更新(スコア)")
+        is_new_miss_record = col2.checkbox("自己ベスト更新(ミスカウント)")
+
+        captured_date = st.date_input("取込日時として記録する日付", value=datetime.date.today())
+
+        submitted = st.form_submit_button("この内容を追加")
+
+    if submitted:
+        if song is None or not song.title:
+            st.error("曲名を選択または入力してください。")
+            return
+
+        data = {
+            "mode": mode,
+            "difficulty": difficulty,
+            "level": int(level),
+            "notes": _parse_optional_int(notes),
+            "clear_type": clear_type,
+            "dj_level_rank": dj_level_rank,
+            "dj_level_diff": _parse_optional_int(dj_level_diff),
+            "score": int(score),
+            "score_diff_from_best": _parse_optional_int(score_diff),
+            "pgreat": int(pgreat),
+            "great": int(great),
+            "good": int(good),
+            "bad": int(bad),
+            "poor": int(poor),
+            "miss_count": int(miss_count),
+            "miss_count_diff_from_best": _parse_optional_int(miss_diff),
+            "is_new_score_record": is_new_score_record,
+            "is_new_miss_record": is_new_miss_record,
+        }
+        row = build_history_row(data, song, "手入力", captured_date.strftime("%Y-%m-%d"))
+        st.session_state.convert_rows.append(row)
+        st.success(f"「{song.title}」({difficulty})を追加しました。")
+
+    render_accumulated_rows_section()
 
 
 def main() -> None:
     st.set_page_config(page_title="INFINITAS スコア履歴", layout="wide")
     st.title("INFINITAS スコア履歴")
 
-    mode = st.sidebar.radio("モード", ["履歴を見る", "リザルト画像から変換"])
+    mode = st.sidebar.radio("モード", ["履歴を見る", "リザルト画像から変換", "手動で入力"])
     if mode == "リザルト画像から変換":
         render_convert_page()
+        return
+    if mode == "手動で入力":
+        render_manual_entry_page()
         return
 
     uploaded = st.file_uploader(
