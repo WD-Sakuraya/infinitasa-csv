@@ -1,6 +1,6 @@
-streamlit
+﻿streamlit
 pandas
 altair
 requests
 beautifulsoup4
-google-genai
+anthropic

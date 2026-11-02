@@ -10,12 +10,14 @@ beatmania IIDX INFINITASのリザルト画面のスクリーンショットを�
 ## 現状
 - サンプルとして `2253-2531_sp_score.csv`(目標とする集計データの出力フォーマット例)、`image.jpg`(リザルト画面の写真サンプル)が存在する
 - 楽曲DB取り込みスクリプト `scripts/build_song_db.py` を実装済み(bemaniwikiをパースし `data/song_db.csv` を生成)
-- リザルト画像解析スクリプト `scripts/extract_result.py` を実装済み(Gemini Vision APIで画像を解析し `data/history.csv` に追記)。実画像(image.jpg)での動作確認済み
+- リザルト画像解析スクリプト `scripts/extract_result.py` を実装済み(Claude Vision APIで画像を解析し `data/history.csv` に追記)
+- 精度の懸念から画像解析だけに頼らず、`app.py`に手動入力フォーム(「手動で入力」モード)も用意している
 
 ## 実行環境
-- Python 3.15、依存パッケージ: `requests`, `beautifulsoup4`, `google-genai`, `streamlit`, `altair`, `pandas`(`requirements.txt`に記載)
-- 画像解析には Google Gemini API を使用(`GOOGLE_API_KEY` 環境変数が必要)。**当初Anthropic Claude APIで実装したが、ユーザーが既に持っているGoogle APIキーを使いたいとの要望でGemini APIに作り直した**(2026-11-02)
+- Python 3.15、依存パッケージ: `requests`, `beautifulsoup4`, `anthropic`, `streamlit`, `altair`, `pandas`(`requirements.txt`に記載)
+- 画像解析には Anthropic API を使用(`ANTHROPIC_API_KEY` 環境変数が必要)
 - Git/GitHub CLIはこのPCに未インストールだったため、winget経由でインストール済み
+- **経緯**: 当初Claude APIで実装→ユーザーが持っているGoogle APIキーを使いたいとの要望でGemini APIに作り直した→Gemini側の精度・安定性(モデル混雑による503、NEW RECORDバッジの見落とし等)に懸念が出たため、Claude API実装に戻した(2026-11-02)。Gemini版の知見は本ファイルの変更履歴(git log)参照
 
 ## デプロイ(履歴ビューアーの公開)
 - GitHubリポジトリ: https://github.com/WD-Sakuraya/infinitasa-csv (Public。`.gitignore`で `/data/`, `*.csv`, `image*` を除外し個人データは非公開)
@@ -68,14 +70,11 @@ beatmania IIDX INFINITASのリザルト画面のスクリーンショットを�
 
 ### scripts/iidx_extract.py (共通ロジック)
 - リザルト画像からのデータ抽出ロジック本体(`extract_from_bytes` / `extract_from_image`, `HISTORY_COLUMNS`, `EXTRACTION_SCHEMA`, `SYSTEM_PROMPT`, `build_history_row`)。CLI(`extract_result.py`)とStreamlitアプリ(`app.py`)の両方から共通利用する
-- Google Gemini API(`google-genai`パッケージ、`google.genai.Client`)を使用。モデルは `gemini-3.5-flash`(定数`MODEL`)
-- 構造化出力は `GenerateContentConfig(response_mime_type="application/json", response_json_schema=...)` で指定。GeminiのJSON Schemaサポートは一部機能のみ(type/format/enum/items/anyOf/properties/required等)のため、nullable項目は `"type": [...]` ではなく `anyOf: [{"type": "integer"}, {"type": "null"}]` で表現している(`_NULLABLE_INT`)
-- 抽出項目: タイトル, アーティスト, モード(SP/DP), 難易度, 難易度数値, ノーツ数, クリアタイプ, DJ LEVELランク, DJ LEVEL基準点差分,
+- Claude(`claude-opus-5-5`)のVision + 構造化出力(`output_config.format`のjson_schema)で、今回のプレー(今回のスコア列)の値を抽出:
+  タイトル, アーティスト, モード(SP/DP), 難易度, 難易度数値, ノーツ数, クリアタイプ, DJ LEVELランク, DJ LEVEL基準点差分,
   スコア, スコア自己ベスト差分, PGreat/Great/Good/Bad/Poor, ミスカウント, ミスカウント自己ベスト差分, 自己ベスト更新フラグ
 - 読み取りに自信が無いフィールドは `unclear_fields` として返させる
-- Gemini側で「モデルが混雑中」の503エラー(`google.genai.errors.ServerError`)が頻発したため、`extract_from_bytes`内に最大3回・指数バックオフでのリトライを実装済み(SDK自体も内部でtenacityによる再試行をしているが、それでも枯渇することがあったため)
-- 実画像(image.jpg, Digitank System HYPER)で動作確認済み。曲名・全スコア項目が正確に抽出され、song_db.csvとの照合も成功。既知の精度課題: `is_new_miss_record`がスコア上は新記録(ミスカウント減少)でも`False`になるケースがあった(画面上の「NEW RECORD」バッジを見落とした可能性。プロンプト改善の余地あり)
-- モデル選定: `gemini-3.1-pro-preview` 等のPro系モデルはユーザーの無料APIキーでは **クォータ上限が0固定**(エラーメッセージに明記)で一切使用不可。課金を有効化しない限りPro系は使えないため、無料枠でも安定して高精度だった `gemini-3.5-flash` を採用している。将来的に課金を有効化すればPro系へのアップグレードも検討可
+- **Gemini APIからの移行経緯**: 一時Google Gemini API(`gemini-3.5-flash`)で実装したが、(1)モデル混雑による503エラーが頻発、(2)Pro系モデルは無料APIキーだとクォータ上限0で使用不可、(3)NEW RECORDバッジの見落とし等の精度課題があり、ユーザーの判断でClaude API実装に戻した
 
 ### scripts/extract_result.py (CLI)
 - `python scripts/extract_result.py <画像ファイル...>` でリザルト画像を解析し、`data/history.csv` に1枚1行で追記する
@@ -102,7 +101,7 @@ beatmania IIDX INFINITASのリザルト画面のスクリーンショットを�
 
 ### リザルト画像から変換モード(app.py内, render_convert_page)
 - サイトに画像をアップロードするだけで、ブラウザ上でCSV変換ができる機能。`scripts/iidx_extract.py`を直接importして使用
-- APIキーは `st.secrets["GOOGLE_API_KEY"]`(Streamlit Cloudの場合: アプリ設定のSecretsに登録)または環境変数`GOOGLE_API_KEY`(ローカル実行の場合)から取得。未設定ならエラーメッセージを表示して案内
+- APIキーは `st.secrets["ANTHROPIC_API_KEY"]`(Streamlit Cloudの場合: アプリ設定のSecretsに登録)または環境変数`ANTHROPIC_API_KEY`(ローカル実行の場合)から取得。未設定ならエラーメッセージを表示して案内
 - 画像を複数選択→解析→曲名があいまい一致で自動解決できなければ候補をラジオボタンで選択(または手入力)→「この内容で追加」で `st.session_state.convert_rows` に蓄積
 - Streamlit Cloudのファイルシステムは永続化されないため、サーバー側へのCSV書き込みはしない設計。変換結果はブラウザのセッション内に保持し、既存history.csvをアップロードして結合した上で「CSVをダウンロード」ボタンから取得する運用
 - 楽曲DBは `data/song_db.csv` をリポジトリに同梱(公開データのため`.gitignore`で例外的に追跡対象にしている)
@@ -118,8 +117,8 @@ beatmania IIDX INFINITASのリザルト画面のスクリーンショットを�
 
 ## 今後の検討事項
 - 複数枚のスクリーンショットの入力方法(フォルダ監視/ドラッグ&ドロップなど、現状はコマンドライン引数指定のみ)
-- is_new_miss_record等、NEW RECORDバッジの見落としに対するプロンプト精度改善
+- extract_result.py のAPI呼び出し自体は未テスト(ANTHROPIC_API_KEY未設定のため)。キー取得後に実画像で動作確認が必要
 - unclear_fieldsがある場合にユーザー確認を求めるフロー(現状は警告表示のみで値はそのまま記録)
 - 既存CSVへの追記・更新ロジック(同じ曲・難易度の再プレー時の扱い、履歴は追記のみでよいか)
 - song_db.csvの更新タイミング(bemaniwiki側の更新にどう追従するか)
-- スマホアプリ化(バックエンド経由でGemini APIを呼ぶ構成への移行)
+- スマホアプリ化(バックエンド経由でClaude APIを呼ぶ構成への移行)

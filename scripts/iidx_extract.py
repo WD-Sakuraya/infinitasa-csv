@@ -1,20 +1,12 @@
-"""リザルト画像からのデータ抽出ロジック(CLIスクリプトとStreamlitアプリの共通部分)。
-
-Google Gemini API(google-genaiパッケージ)を使用する。
-"""
+﻿"""リザルト画像からのデータ抽出ロジック(CLIスクリプトとStreamlitアプリの共通部分)。"""
+import base64
 import json
 import mimetypes
 import os
-import time
 
-from google import genai
-from google.genai import errors, types
+import anthropic
 
-# サーバー混雑時の503が頻発するため、数回リトライする
-MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 5
-
-MODEL = "gemini-3.5-flash"
+MODEL = "claude-opus-5-5"
 
 HISTORY_COLUMNS = [
     "取込日時",
@@ -43,11 +35,6 @@ HISTORY_COLUMNS = [
     "元画像",
 ]
 
-# Gemini の response_json_schema は JSON Schema の一部しかサポートしない
-# (type/format/enum/items/anyOf/properties/required 等)。nullable表現は
-# "type": [...] ではなく anyOf で表す。
-_NULLABLE_INT = {"anyOf": [{"type": "integer"}, {"type": "null"}]}
-
 EXTRACTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -59,7 +46,10 @@ EXTRACTION_SCHEMA = {
             "enum": ["BEGINNER", "NORMAL", "HYPER", "ANOTHER", "LEGGENDARIA"],
         },
         "level": {"type": "integer", "description": "難易度の数値(譜面レベル)"},
-        "notes": {**_NULLABLE_INT, "description": "ノーツ数。表示が無ければnull"},
+        "notes": {
+            "type": ["integer", "null"],
+            "description": "ノーツ数。表示が無ければnull",
+        },
         "clear_type": {
             "type": "string",
             "description": "今回のプレーのクリアタイプ(例: FAILED, ASSIST CLEAR, EASY CLEAR, CLEAR, HARD CLEAR, EX HARD CLEAR, FULLCOMBO CLEAR)",
@@ -69,12 +59,12 @@ EXTRACTION_SCHEMA = {
             "description": "今回のプレーのDJ LEVELランク文字(例: B, A, AA, AAA, F)",
         },
         "dj_level_diff": {
-            **_NULLABLE_INT,
+            "type": ["integer", "null"],
             "description": "DJ LEVELランクの基準点からの差分点数(符号付き、例: B+12なら12)。表示が読み取れなければnull",
         },
         "score": {"type": "integer", "description": "今回のプレーのEXスコア"},
         "score_diff_from_best": {
-            **_NULLABLE_INT,
+            "type": ["integer", "null"],
             "description": "自己ベストスコアとの差分(符号付き)。NEW RECORD等で差分表示が無ければnull",
         },
         "pgreat": {"type": "integer"},
@@ -84,7 +74,7 @@ EXTRACTION_SCHEMA = {
         "poor": {"type": "integer"},
         "miss_count": {"type": "integer", "description": "今回のプレーのミスカウント"},
         "miss_count_diff_from_best": {
-            **_NULLABLE_INT,
+            "type": ["integer", "null"],
             "description": "自己ベストミスカウントとの差分(符号付き)。NEW RECORD等で差分表示が無ければnull",
         },
         "is_new_score_record": {"type": "boolean"},
@@ -140,37 +130,46 @@ SYSTEM_PROMPT = """\
 値が反射や画質で確信を持てない場合は、推測で埋めずにunclear_fieldsにそのフィールド名を入れてください。
 """
 
-SUPPORTED_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif")
+SUPPORTED_MEDIA_TYPES = ("image/jpeg", "image/png", "image/webp", "image/gif")
 
 
-def extract_from_bytes(client: genai.Client, image_bytes: bytes, media_type: str) -> dict:
+def extract_from_bytes(client: anthropic.Anthropic, image_bytes: bytes, media_type: str) -> dict:
     if media_type not in SUPPORTED_MEDIA_TYPES:
         raise ValueError(f"対応していない画像形式です: {media_type}")
 
-    last_error = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = client.models.generate_content(
-                model=MODEL,
-                contents=[
-                    types.Part.from_bytes(data=image_bytes, mime_type=media_type),
-                    "この画像のリザルトを抽出してください。",
+    image_data = base64.standard_b64encode(image_bytes).decode("utf-8")
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=4096,
+        system=SYSTEM_PROMPT,
+        output_config={"effort": "medium", "format": {"type": "json_schema", "schema": EXTRACTION_SCHEMA}},
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": image_data,
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": "この画像のリザルトを抽出してください。",
+                    },
                 ],
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    response_json_schema=EXTRACTION_SCHEMA,
-                ),
-            )
-            return json.loads(response.text)
-        except errors.ServerError as e:
-            last_error = e
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(RETRY_BACKOFF_SECONDS * (attempt + 1))
-    raise last_error
+            }
+        ],
+    )
+
+    text = next(b.text for b in response.content if b.type == "text")
+    return json.loads(text)
 
 
-def extract_from_image(client: genai.Client, image_path: str) -> dict:
+def extract_from_image(client: anthropic.Anthropic, image_path: str) -> dict:
     media_type, _ = mimetypes.guess_type(image_path)
     with open(image_path, "rb") as f:
         image_bytes = f.read()
